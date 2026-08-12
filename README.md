@@ -25,6 +25,8 @@ field-level parsing and automatic CRC handling.
   other unnecessary embedded overhead.
 
 See [DESIGN.md](DESIGN.md) for the normative decisions and acceptance criteria.
+Architecture experiments are measured with the reproducible suite described in
+[BENCHMARKS.md](BENCHMARKS.md).
 
 ## Tests
 
@@ -45,4 +47,3 @@ optional, valid, invalid and malformed CRCs plus invalid-field recovery.
 
 The checked-in fixture header makes the tests reproducible. Re-run the sync
 script whenever telegrams are added to `p1_generator` and commit the result.
-

@@ -29,6 +29,21 @@ add_test(NAME dsmr3_reader COMMAND dsmr3_reader)
 
 add_test(NAME dsmr3_corpus_runs COMMAND dsmr3_corpus)
 
+set(DSMR_BENCH_PROFILES minimal p1_dongle)
+set(DSMR_BENCH_PROFILE_NUMBER 1)
+foreach(profile IN LISTS DSMR_BENCH_PROFILES)
+  add_executable(dsmr3_benchmark_${profile}
+      benchmarks/native_parse_benchmark.cpp)
+  target_compile_definitions(dsmr3_benchmark_${profile} PRIVATE
+      DSMR_BENCH_VERSION=3
+      DSMR_BENCH_VERSION_NAME="v3-template"
+      DSMR_BENCH_PROFILE=${DSMR_BENCH_PROFILE_NUMBER})
+  target_include_directories(dsmr3_benchmark_${profile} PRIVATE
+      benchmarks tests)
+  target_link_libraries(dsmr3_benchmark_${profile} PRIVATE dsmr3_native)
+  math(EXPR DSMR_BENCH_PROFILE_NUMBER "${DSMR_BENCH_PROFILE_NUMBER} + 1")
+endforeach()
+
 if(EXISTS "${DSMR2LIB_PATH}/src/dsmr2.h")
   add_library(dsmr2_native STATIC "${DSMR2LIB_PATH}/src/dsmr2/fields2.cpp")
   target_include_directories(dsmr2_native PUBLIC
@@ -41,6 +56,25 @@ if(EXISTS "${DSMR2LIB_PATH}/src/dsmr2.h")
   target_include_directories(dsmr2_corpus PRIVATE tests)
   target_link_libraries(dsmr2_corpus PRIVATE dsmr2_native)
   add_test(NAME dsmr2_corpus_runs COMMAND dsmr2_corpus)
+
+  set(DSMR_BENCH_PROFILE_NUMBER 1)
+  foreach(profile IN LISTS DSMR_BENCH_PROFILES)
+    add_executable(dsmr2_benchmark_${profile}
+        benchmarks/native_parse_benchmark.cpp)
+    target_compile_definitions(dsmr2_benchmark_${profile} PRIVATE
+        DSMR_BENCH_PUBLIC_HEADER="dsmr2.h"
+        DSMR_BENCH_VERSION=2
+        DSMR_BENCH_VERSION_NAME="v2-template"
+        DSMR_BENCH_PROFILE=${DSMR_BENCH_PROFILE_NUMBER})
+    target_include_directories(dsmr2_benchmark_${profile} PRIVATE
+        benchmarks tests)
+    target_link_libraries(dsmr2_benchmark_${profile} PRIVATE dsmr2_native)
+    math(EXPR DSMR_BENCH_PROFILE_NUMBER "${DSMR_BENCH_PROFILE_NUMBER} + 1")
+  endforeach()
+
+  add_custom_target(dsmr_benchmarks DEPENDS
+      dsmr2_benchmark_minimal dsmr3_benchmark_minimal
+      dsmr2_benchmark_p1_dongle dsmr3_benchmark_p1_dongle)
 
   add_test(NAME dsmr2_dsmr3_compatibility
       COMMAND ${CMAKE_COMMAND}
