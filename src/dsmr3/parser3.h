@@ -68,6 +68,48 @@ namespace dsmr {
 template<typename... Ts>
 struct ParsedData;
 
+// Do not use F() for multiply-used strings (including strings used from
+// multiple template instantiations), that would result in multiple instances
+// of the string in the binary.
+static constexpr char DUPLICATE_FIELD[] DSMR_PROGMEM = "Duplicate field";
+
+/**
+ * Runtime binding between one requested field and its type-specific parser.
+ * The table itself is generated once for a ParsedData type, while framing and
+ * field lookup stay ordinary shared code. This prevents the compiler from
+ * inlining the complete recursive field chain at every parse call.
+ */
+typedef ParseResult<void> (*FieldDispatch)(
+    void *data, const char *str, const char *end);
+
+template<typename Data, typename Field>
+struct FieldBindingFor {
+  static ParseResult<void> dispatch(
+      void *object, const char *str, const char *end) {
+    Data& data = *static_cast<Data*>(object);
+    Field& field = static_cast<Field&>(data);
+
+    // A null input is the compact clear operation used when trailing data
+    // invalidates a value that was parsed successfully.
+    if (!str) {
+      field.present() = false;
+      return ParseResult<void>();
+    }
+
+    if (field.present())
+      return ParseResult<void>().fail(
+          (const __FlashStringHelper*)DUPLICATE_FIELD, str);
+
+    // Mark provisionally so optional parsers can deliberately clear their
+    // established absent sentinels.
+    field.present() = true;
+    ParseResult<void> result = field.parse(str, end);
+    if (result.err)
+      field.present() = false;
+    return result;
+  }
+};
+
 /**
  * Base case: No fields present.
  */
@@ -92,44 +134,24 @@ struct ParsedData<> {
   }
 };
 
-// Do not use F() for multiply-used strings (including strings used from
-// multiple template instantiations), that would result in multiple
-// instances of the string in the binary
-static constexpr char DUPLICATE_FIELD[] DSMR_PROGMEM = "Duplicate field";
-
 /**
  * General case: At least one typename is passed.
  */
 template<typename T, typename... Ts>
 struct ParsedData<T, Ts...> : public T, ParsedData<Ts...> {
+  typedef ParsedData<T, Ts...> Self;
+
   /**
    * This method is used by the parser to parse a single line. The
-   * OBIS id of the line is passed, and this method recursively finds a
-   * field with a matching id. If any, it calls it's parse method, which
+   * OBIS id of the line is passed, and this method finds a field with a
+   * matching id in the runtime binding table. If any, it calls its parse method, which
    * parses the value and stores it in the field.
    */
   ParseResult<void> parse_line(const ObisId& id, const char *str, const char *end) {
-    return parse_line_inlined(id, str, end);
-  }
-
-  /**
-   * always_inline version of parse_line. This is a separate method, to
-   * allow recursively inlining all calls, but still have a non-inlined
-   * top-level parse_line method.
-   */
-  ParseResult<void> __attribute__((__always_inline__)) parse_line_inlined(const ObisId& id, const char *str, const char *end) {
-    if (id == T::id) {
-      if (T::present())
-        return ParseResult<void>().fail((const __FlashStringHelper*)DUPLICATE_FIELD, str);
-      // Mark provisionally so optional field parsers can deliberately clear
-      // the flag for their established "absent" sentinels.
-      T::present() = true;
-      ParseResult<void> result = T::parse(str, end);
-      if (result.err)
-        T::present() = false;
-      return result;
-    }
-    return ParsedData<Ts...>::parse_line_inlined(id, str, end);
+    const int16_t index = find_binding(id);
+    if (index < 0)
+      return ParseResult<void>().until(str);
+    return dispatchers()[index](this, str, end);
   }
 
   template<typename F>
@@ -155,10 +177,27 @@ struct ParsedData<T, Ts...> : public T, ParsedData<Ts...> {
   }
 
   void clear_present(const ObisId& id) {
-    if (id == T::id)
-      T::present() = false;
-    else
-      ParsedData<Ts...>::clear_present(id);
+    const int16_t index = find_binding(id);
+    if (index >= 0)
+      dispatchers()[index](this, NULL, NULL);
+  }
+
+ private:
+  static const FieldDispatch *dispatchers() {
+    static const FieldDispatch entries[] = {
+      &FieldBindingFor<Self, T>::dispatch,
+      &FieldBindingFor<Self, Ts>::dispatch...
+    };
+    return entries;
+  }
+
+  static int16_t find_binding(const ObisId& id) {
+    static const ObisId ids[] = {T::id, Ts::id...};
+    for (size_t i = 0; i < sizeof(ids) / sizeof(ids[0]); ++i) {
+      if (ids[i] == id)
+        return static_cast<int16_t>(i);
+    }
+    return -1;
   }
 };
 

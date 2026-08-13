@@ -39,6 +39,9 @@ ITERATIONS=5000 FQBN='esp32:esp32:esp32c3:FlashSize=4M,PartitionScheme=min_spiff
   ./benchmarks/run_benchmarks.sh
 ```
 
+By default the script extracts `main` to a temporary directory as the standard
+v3 reference. Set `DSMR3_STANDARD_PATH` to compare with a different checkout.
+
 Native timings are useful for relative comparisons on the same machine and
 build. They are not a substitute for a later on-device cycle benchmark.
 
@@ -92,3 +95,34 @@ Important observations:
 The first hybrid target is therefore reducing the 22,650-byte v3 flash increase
 from minimal to the P1 Dongle profile, while preserving equal static RAM and
 the current tolerant behavior.
+
+## Hybrid dispatch experiment
+
+Branch `codex/hybrid-parser` replaces the recursive field lookup with a small
+runtime core. Templates still define storage and generate one typed callback
+per selected field, while the shared parser searches a compact OBIS-ID array
+and invokes the matching callback. The public `ParsedData<...>` API, field
+types and parser behavior remain unchanged.
+
+Measured on 2026-08-13 with the same ESP32 core and FQBN as the baseline:
+
+| Version | Profile | Flash | Static RAM | Host `ParsedData` size |
+| --- | --- | ---: | ---: | ---: |
+| v3 template | minimal | 265,150 B | 13,208 B | 40 B |
+| v3 hybrid | minimal | 265,396 B | 13,208 B | 40 B |
+| v3 template | P1 Dongle | 287,800 B | 13,960 B | 1,168 B |
+| v3 hybrid | P1 Dongle | 290,082 B | 13,960 B | 1,168 B |
+
+The hybrid variant is 246 bytes larger for the minimal profile and 2,282 bytes
+larger for the P1 Dongle profile. Static RAM and `ParsedData` size are exactly
+equal. A 1,000-iteration native run found both field-dispatch variants in the
+same performance range; the result varies by a few percent between runs and
+does not justify the flash increase. All corpus snapshots match v2 and the
+standard v3 byte-for-byte.
+
+Conclusion: this particular function-pointer hybrid does not meet the
+acceptance criteria and should not replace the standard v3 implementation.
+The branch is retained as a measured prototype. A follow-up architecture would
+need to share the value decoders themselves (for example compact descriptors
+plus offsets), not merely replace template recursion with callbacks, before it
+is likely to reduce flash.
