@@ -9,6 +9,8 @@ enable_testing()
 
 set(DSMR2LIB_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../dsmr2Lib" CACHE PATH
     "Path to a dsmr2Lib checkout used for compatibility validation")
+set(DSMR3_STANDARD_PATH "" CACHE PATH
+    "Optional path to the standard template-decoder dsmr3Lib checkout")
 
 add_library(dsmr3_native STATIC src/dsmr3/fields3.cpp)
 target_include_directories(dsmr3_native PUBLIC
@@ -29,6 +31,11 @@ add_test(NAME dsmr3_reader COMMAND dsmr3_reader)
 
 add_test(NAME dsmr3_corpus_runs COMMAND dsmr3_corpus)
 
+add_executable(dsmr3_profile_snapshot tests/profile_snapshot.cpp)
+target_include_directories(dsmr3_profile_snapshot PRIVATE tests benchmarks)
+target_link_libraries(dsmr3_profile_snapshot PRIVATE dsmr3_native)
+add_test(NAME dsmr3_profile_snapshot_runs COMMAND dsmr3_profile_snapshot)
+
 set(DSMR_BENCH_PROFILES minimal p1_dongle)
 set(DSMR_BENCH_PROFILE_NUMBER 1)
 foreach(profile IN LISTS DSMR_BENCH_PROFILES)
@@ -36,7 +43,7 @@ foreach(profile IN LISTS DSMR_BENCH_PROFILES)
       benchmarks/native_parse_benchmark.cpp)
   target_compile_definitions(dsmr3_benchmark_${profile} PRIVATE
       DSMR_BENCH_VERSION=3
-      DSMR_BENCH_VERSION_NAME="v3-template"
+      DSMR_BENCH_VERSION_NAME="v3-shared-decoders"
       DSMR_BENCH_PROFILE=${DSMR_BENCH_PROFILE_NUMBER})
   target_include_directories(dsmr3_benchmark_${profile} PRIVATE
       benchmarks tests)
@@ -56,6 +63,13 @@ if(EXISTS "${DSMR2LIB_PATH}/src/dsmr2.h")
   target_include_directories(dsmr2_corpus PRIVATE tests)
   target_link_libraries(dsmr2_corpus PRIVATE dsmr2_native)
   add_test(NAME dsmr2_corpus_runs COMMAND dsmr2_corpus)
+
+  add_executable(dsmr2_profile_snapshot tests/profile_snapshot.cpp)
+  target_compile_definitions(dsmr2_profile_snapshot PRIVATE
+      DSMR_TEST_PUBLIC_HEADER="dsmr2.h")
+  target_include_directories(dsmr2_profile_snapshot PRIVATE tests benchmarks)
+  target_link_libraries(dsmr2_profile_snapshot PRIVATE dsmr2_native)
+  add_test(NAME dsmr2_profile_snapshot_runs COMMAND dsmr2_profile_snapshot)
 
   set(DSMR_BENCH_PROFILE_NUMBER 1)
   foreach(profile IN LISTS DSMR_BENCH_PROFILES)
@@ -81,6 +95,61 @@ if(EXISTS "${DSMR2LIB_PATH}/src/dsmr2.h")
         -DV2_EXECUTABLE=$<TARGET_FILE:dsmr2_corpus>
         -DV3_EXECUTABLE=$<TARGET_FILE:dsmr3_corpus>
         -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compare_compatible.cmake)
+  add_test(NAME dsmr2_dsmr3_profile_compatibility
+      COMMAND ${CMAKE_COMMAND}
+        -DV2_EXECUTABLE=$<TARGET_FILE:dsmr2_profile_snapshot>
+        -DV3_EXECUTABLE=$<TARGET_FILE:dsmr3_profile_snapshot>
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compare_compatible.cmake)
 else()
   message(WARNING "dsmr2Lib not found at ${DSMR2LIB_PATH}; compatibility test disabled")
+endif()
+
+if(EXISTS "${DSMR3_STANDARD_PATH}/src/dsmr3.h")
+  add_library(dsmr3_standard_native STATIC
+      "${DSMR3_STANDARD_PATH}/src/dsmr3/fields3.cpp")
+  target_include_directories(dsmr3_standard_native PUBLIC
+      tests/support
+      "${DSMR3_STANDARD_PATH}/src")
+
+  add_executable(dsmr3_standard_corpus tests/corpus_snapshot.cpp)
+  target_include_directories(dsmr3_standard_corpus PRIVATE tests)
+  target_link_libraries(dsmr3_standard_corpus PRIVATE dsmr3_standard_native)
+  add_test(NAME dsmr3_standard_corpus_runs COMMAND dsmr3_standard_corpus)
+
+  add_executable(dsmr3_standard_profile_snapshot tests/profile_snapshot.cpp)
+  target_include_directories(dsmr3_standard_profile_snapshot PRIVATE
+      tests benchmarks)
+  target_link_libraries(dsmr3_standard_profile_snapshot PRIVATE
+      dsmr3_standard_native)
+  add_test(NAME dsmr3_standard_profile_snapshot_runs
+      COMMAND dsmr3_standard_profile_snapshot)
+  add_test(NAME dsmr3_standard_shared_decoder_compatibility
+      COMMAND ${CMAKE_COMMAND}
+        -DV2_EXECUTABLE=$<TARGET_FILE:dsmr3_standard_corpus>
+        -DV3_EXECUTABLE=$<TARGET_FILE:dsmr3_corpus>
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compare_compatible.cmake)
+  add_test(NAME dsmr3_standard_shared_decoder_profile_compatibility
+      COMMAND ${CMAKE_COMMAND}
+        -DV2_EXECUTABLE=$<TARGET_FILE:dsmr3_standard_profile_snapshot>
+        -DV3_EXECUTABLE=$<TARGET_FILE:dsmr3_profile_snapshot>
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compare_compatible.cmake)
+
+  set(DSMR_BENCH_PROFILE_NUMBER 1)
+  foreach(profile IN LISTS DSMR_BENCH_PROFILES)
+    add_executable(dsmr3_standard_benchmark_${profile}
+        benchmarks/native_parse_benchmark.cpp)
+    target_compile_definitions(dsmr3_standard_benchmark_${profile} PRIVATE
+        DSMR_BENCH_VERSION=3
+        DSMR_BENCH_VERSION_NAME="v3-template-decoders"
+        DSMR_BENCH_PROFILE=${DSMR_BENCH_PROFILE_NUMBER})
+    target_include_directories(dsmr3_standard_benchmark_${profile} PRIVATE
+        benchmarks tests)
+    target_link_libraries(dsmr3_standard_benchmark_${profile} PRIVATE
+        dsmr3_standard_native)
+    math(EXPR DSMR_BENCH_PROFILE_NUMBER "${DSMR_BENCH_PROFILE_NUMBER} + 1")
+  endforeach()
+
+  add_custom_target(dsmr3_standard_benchmarks DEPENDS
+      dsmr3_standard_benchmark_minimal
+      dsmr3_standard_benchmark_p1_dongle)
 endif()

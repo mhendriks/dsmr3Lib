@@ -64,13 +64,37 @@ struct ParsedField {
   static const char *unit() { return ""; }
 };
 
+/**
+ * Non-template value decoders shared by all selected field types.
+ *
+ * The field templates retain the public API and typed storage, but delegate
+ * the actual value parsing here so one decoder body is emitted per value
+ * shape rather than per concrete field.
+ */
+struct ValueDecoder {
+  static ParseResult<void> string(
+      String& value, size_t minlen, size_t maxlen,
+      const char *str, const char *end);
+  static ParseResult<void> timestamp(
+      String& value, const char *str, const char *end);
+  static ParseResult<void> fixed(
+      uint32_t& value, const char *unit,
+      const char *str, const char *end);
+  static ParseResult<void> timestampedFixed(
+      String& timestamp, uint32_t& value, const char *unit,
+      const char *str, const char *end);
+  static ParseResult<void> doubleLineTimestampedFixed(
+      String& timestamp, uint32_t& value, const char *unit,
+      const char *str, const char *end);
+  static ParseResult<void> raw(
+      String& value, const char *str, const char *end);
+};
+
 template <typename T, size_t minlen, size_t maxlen>
 struct StringField : ParsedField<T> {
   ParseResult<void> parse(const char *str, const char *end) {
-    ParseResult<String> res = StringParser::parse_string(minlen, maxlen, str, end);
-    if (!res.err)
-      static_cast<T*>(this)->val() = res.result;
-    return res;
+    return ValueDecoder::string(
+        static_cast<T*>(this)->val(), minlen, maxlen, str, end);
   }
 };
 
@@ -82,54 +106,8 @@ struct StringField : ParsedField<T> {
 // into a string for now.
 template <typename T>
 struct TimestampField : StringField<T, 12, 13> {
-  static int8_t hexNibble(char value) {
-    if (value >= '0' && value <= '9') return value - '0';
-    if (value >= 'A' && value <= 'F') return value - 'A' + 10;
-    if (value >= 'a' && value <= 'f') return value - 'a' + 10;
-    return -1;
-  }
-
-  static bool hexByte(const String& value, size_t offset, uint8_t& result) {
-    if (offset + 1 >= value.length()) return false;
-    const int8_t high = hexNibble(value[offset]);
-    const int8_t low = hexNibble(value[offset + 1]);
-    if (high < 0 || low < 0) return false;
-    result = (uint8_t)((high << 4) | low);
-    return true;
-  }
-
   ParseResult<void> parse(const char *str, const char *end) {
-    ParseResult<String> regular = StringParser::parse_string(12, 13, str, end);
-    if (!regular.err) {
-      static_cast<T*>(this)->val() = regular.result;
-      return regular;
-    }
-
-    // MCS301 uses the 12-byte DLMS/COSEM date-time octet string:
-    // year(2), month, day, weekday, hour, minute, second, hundredths,
-    // deviation(2), clock status. Convert it to DSMR YYMMDDhhmmssS/W.
-    ParseResult<String> dlms = StringParser::parse_string(24, 24, str, end);
-    if (dlms.err) return dlms;
-
-    uint8_t bytes[12];
-    for (size_t i = 0; i < sizeof(bytes); i++) {
-      if (!hexByte(dlms.result, i * 2, bytes[i]))
-        return ParseResult<void>().fail(F("Invalid DLMS date-time"), str + 1 + i * 2);
-    }
-
-    const uint16_t year = ((uint16_t)bytes[0] << 8) | bytes[1];
-    if (year < 2000 || year > 2099 ||
-        bytes[2] < 1 || bytes[2] > 12 || bytes[3] < 1 || bytes[3] > 31 ||
-        bytes[5] > 23 || bytes[6] > 59 || bytes[7] > 59)
-      return ParseResult<void>().fail(F("Invalid DLMS date-time"), str + 1);
-
-    char converted[14];
-    snprintf(converted, sizeof(converted), "%02u%02u%02u%02u%02u%02u%c",
-             (unsigned)(year % 100), (unsigned)bytes[2], (unsigned)bytes[3],
-             (unsigned)bytes[5], (unsigned)bytes[6], (unsigned)bytes[7],
-             (bytes[11] & 0x80) ? 'S' : 'W');
-    static_cast<T*>(this)->val() = converted;
-    return ParseResult<void>().until(dlms.next);
+    return ValueDecoder::timestamp(static_cast<T*>(this)->val(), str, end);
   }
 };
 
@@ -159,10 +137,8 @@ struct FixedValue {
 template <typename T, const char *_unit, const char *_int_unit>
 struct FixedField : ParsedField<T> {
   ParseResult<void> parse(const char *str, const char *end) {
-    ParseResult<uint32_t> res = NumParser::parse(3, _unit, str, end);
-    if (!res.err)
-      static_cast<T*>(this)->val()._value = res.result;
-    return res;
+    return ValueDecoder::fixed(
+        static_cast<T*>(this)->val()._value, _unit, str, end);
   }
 
   static const char *unit() { return _unit; }
@@ -180,33 +156,9 @@ template <typename T, const char *_unit, const char *_int_unit>
 struct TimestampedFixedField : public FixedField<T, _unit, _int_unit> {
 
   ParseResult<void> parse(const char *str, const char *end) {
-    // 1) Normal order: timestamp then value
-    ParseResult<String> ts = StringParser::parse_string(13, 13, str, end);
-    if (!ts.err) {
-      static_cast<T*>(this)->val().timestamp = ts.result;
-      return FixedField<T, _unit, _int_unit>::parse(ts.next, end);
-    }
-
-    // Optional: allow 12-digit timestamp (no W/S)
-    ts = StringParser::parse_string(12, 12, str, end);
-    if (!ts.err) {
-      static_cast<T*>(this)->val().timestamp = ts.result;
-      return FixedField<T, _unit, _int_unit>::parse(ts.next, end);
-    }
-
-    // 2) Fallback order: value then timestamp (WalonIe variant)
-    auto resVal = FixedField<T, _unit, _int_unit>::parse(str, end);
-    if (resVal.err) return resVal;
-
-    // parse timestamp after the value
-    ts = StringParser::parse_string(13, 13, resVal.next, end);
-    if (ts.err) {
-      ts = StringParser::parse_string(12, 12, resVal.next, end);
-      if (ts.err) return ts;   // auto converts to ParseResult<void>
-    }
-
-    static_cast<T*>(this)->val().timestamp = ts.result;
-    return ts;                 // << fixes ParseResult<void> construction & sets next correctly
+    TimestampedFixedValue& value = static_cast<T*>(this)->val();
+    return ValueDecoder::timestampedFixed(
+        value.timestamp, value._value, _unit, str, end);
   }
 };
 
@@ -219,67 +171,9 @@ struct TimestampedFixedField : public FixedField<T, _unit, _int_unit> {
 template <typename T, const char *_unit, const char *_int_unit>
 struct DoubleLineTimestampedFixedField : public FixedField<T, _unit, _int_unit> {
   ParseResult<void> parse(const char *str, const char *end) {
-    // First, parse timestamp
-    ParseResult<String> res = StringParser::parse_string(12, 12, str, end);
-    if (res.err)
-      return res;
-
-    static_cast<T*>(this)->val().timestamp = res.result;
-
-    // The timestamp is followed by 3 sets of numerical values, parse them
-    //fix parse as string because the num value could contain other chars
-	res = StringParser::parse_string(0, 2, res.next, end);
-	if (res.err)
-      return res;
-//     ParseResult<uint32_t> numres = NumParser::parse(0, NULL, res.next, end);
-//     if (numres.err)
-//       return numres;
-
-    ParseResult<uint32_t> numres = NumParser::parse(0, NULL, res.next, end);
-    if (res.err)
-      return numres;
-
-    numres = NumParser::parse(0, NULL, numres.next, end);
-    if (numres.err)
-      return numres;
-
-    // Afther the numerical values, another ObisID is presented,
-    // skip the first ')'
-    ParseResult<ObisId> idres = ObisIdParser::parse(numres.next + 1, end);
-    if (idres.err)
-      return idres;
-
-    // The last item on the line is the unit, again skip the closing ')'
-    size_t unit_size = strnlen(_unit, 3);
-    ParseResult<String> unitres = StringParser::parse_string(unit_size, unit_size, idres.next + 1, end);
-    if (unitres.err)
-      return unitres;
-    
-    // Verify the unit.
-    const char *unit = unitres.result.c_str();
-    if(memcmp(unit, _unit, unit_size) != 0) {
-      return unitres.fail((const __FlashStringHelper*)INVALID_UNIT, idres.next + 1);
-    }
-
-    // Now move to the next line.
-    const char *start = unitres.next;
-    if (*start == '\r')
-      ++start;
-
-    if (*start == '\n')
-      ++start;
-
-    // Since the start line is moved, also move the end line.
-    const char *newend = start;
-    while (*newend != '\r' && *newend != '\n' && newend != end)
-      ++newend;
-
-    // Finally parse the value.
-    numres = NumParser::parse(3, NULL, start, newend);
-    if (!numres.err)
-      static_cast<T*>(this)->val()._value = numres.result;
-
-    return numres;
+    TimestampedFixedValue& value = static_cast<T*>(this)->val();
+    return ValueDecoder::doubleLineTimestampedFixed(
+        value.timestamp, value._value, _unit, str, end);
   }
 };
 
@@ -328,9 +222,7 @@ struct OptionalMbusTimestampedFixedField : TimestampedFixedField<T, _unit, _int_
 template <typename T>
 struct RawField : ParsedField<T> {
   ParseResult<void> parse(const char *str, const char *end) {
-    // Just copy the string verbatim value without any parsing
-    concat_hack(static_cast<T*>(this)->val(), str, end - str);
-    return ParseResult<void>().until(end);
+    return ValueDecoder::raw(static_cast<T*>(this)->val(), str, end);
   }
 };
 

@@ -49,6 +49,153 @@
 using namespace dsmr;
 using namespace dsmr::fields;
 
+namespace {
+
+int8_t hexNibble(char value) {
+  if (value >= '0' && value <= '9') return value - '0';
+  if (value >= 'A' && value <= 'F') return value - 'A' + 10;
+  if (value >= 'a' && value <= 'f') return value - 'a' + 10;
+  return -1;
+}
+
+bool hexByte(const String& value, size_t offset, uint8_t& result) {
+  if (offset + 1 >= value.length()) return false;
+  const int8_t high = hexNibble(value[offset]);
+  const int8_t low = hexNibble(value[offset + 1]);
+  if (high < 0 || low < 0) return false;
+  result = (uint8_t)((high << 4) | low);
+  return true;
+}
+
+} // namespace
+
+ParseResult<void> ValueDecoder::string(
+    String& value, size_t minlen, size_t maxlen,
+    const char *str, const char *end) {
+  ParseResult<String> result =
+      StringParser::parse_string(minlen, maxlen, str, end);
+  if (!result.err)
+    value = result.result;
+  return result;
+}
+
+ParseResult<void> ValueDecoder::timestamp(
+    String& value, const char *str, const char *end) {
+  ParseResult<String> regular = StringParser::parse_string(12, 13, str, end);
+  if (!regular.err) {
+    value = regular.result;
+    return regular;
+  }
+
+  // MCS301 uses the 12-byte DLMS/COSEM date-time octet string:
+  // year(2), month, day, weekday, hour, minute, second, hundredths,
+  // deviation(2), clock status. Convert it to DSMR YYMMDDhhmmssS/W.
+  ParseResult<String> dlms = StringParser::parse_string(24, 24, str, end);
+  if (dlms.err) return dlms;
+
+  uint8_t bytes[12];
+  for (size_t i = 0; i < sizeof(bytes); ++i) {
+    if (!hexByte(dlms.result, i * 2, bytes[i]))
+      return ParseResult<void>().fail(
+          F("Invalid DLMS date-time"), str + 1 + i * 2);
+  }
+
+  const uint16_t year = ((uint16_t)bytes[0] << 8) | bytes[1];
+  if (year < 2000 || year > 2099 ||
+      bytes[2] < 1 || bytes[2] > 12 || bytes[3] < 1 || bytes[3] > 31 ||
+      bytes[5] > 23 || bytes[6] > 59 || bytes[7] > 59)
+    return ParseResult<void>().fail(F("Invalid DLMS date-time"), str + 1);
+
+  char converted[14];
+  snprintf(converted, sizeof(converted), "%02u%02u%02u%02u%02u%02u%c",
+           (unsigned)(year % 100), (unsigned)bytes[2], (unsigned)bytes[3],
+           (unsigned)bytes[5], (unsigned)bytes[6], (unsigned)bytes[7],
+           (bytes[11] & 0x80) ? 'S' : 'W');
+  value = converted;
+  return ParseResult<void>().until(dlms.next);
+}
+
+ParseResult<void> ValueDecoder::fixed(
+    uint32_t& value, const char *unit,
+    const char *str, const char *end) {
+  ParseResult<uint32_t> result = NumParser::parse(3, unit, str, end);
+  if (!result.err)
+    value = result.result;
+  return result;
+}
+
+ParseResult<void> ValueDecoder::timestampedFixed(
+    String& timestamp, uint32_t& value, const char *unit,
+    const char *str, const char *end) {
+  // Normal order: timestamp, then value.
+  ParseResult<String> ts = StringParser::parse_string(13, 13, str, end);
+  if (ts.err)
+    ts = StringParser::parse_string(12, 12, str, end);
+  if (!ts.err) {
+    timestamp = ts.result;
+    return fixed(value, unit, ts.next, end);
+  }
+
+  // Walloon variant: value, then timestamp.
+  ParseResult<void> parsedValue = fixed(value, unit, str, end);
+  if (parsedValue.err) return parsedValue;
+
+  ts = StringParser::parse_string(13, 13, parsedValue.next, end);
+  if (ts.err) {
+    ts = StringParser::parse_string(12, 12, parsedValue.next, end);
+    if (ts.err) return ts;
+  }
+
+  timestamp = ts.result;
+  return ts;
+}
+
+ParseResult<void> ValueDecoder::doubleLineTimestampedFixed(
+    String& timestamp, uint32_t& value, const char *unit,
+    const char *str, const char *end) {
+  ParseResult<String> result = StringParser::parse_string(12, 12, str, end);
+  if (result.err) return result;
+  timestamp = result.result;
+
+  result = StringParser::parse_string(0, 2, result.next, end);
+  if (result.err) return result;
+
+  ParseResult<uint32_t> number = NumParser::parse(0, NULL, result.next, end);
+  if (number.err) return number;
+  number = NumParser::parse(0, NULL, number.next, end);
+  if (number.err) return number;
+
+  ParseResult<ObisId> id = ObisIdParser::parse(number.next + 1, end);
+  if (id.err) return id;
+
+  const size_t unitSize = strnlen(unit, 3);
+  ParseResult<String> parsedUnit =
+      StringParser::parse_string(unitSize, unitSize, id.next + 1, end);
+  if (parsedUnit.err) return parsedUnit;
+  if (memcmp(parsedUnit.result.c_str(), unit, unitSize) != 0)
+    return parsedUnit.fail(
+        (const __FlashStringHelper*)INVALID_UNIT, id.next + 1);
+
+  const char *start = parsedUnit.next;
+  if (*start == '\r') ++start;
+  if (*start == '\n') ++start;
+
+  const char *newend = start;
+  while (newend != end && *newend != '\r' && *newend != '\n')
+    ++newend;
+
+  number = NumParser::parse(3, NULL, start, newend);
+  if (!number.err)
+    value = number.result;
+  return number;
+}
+
+ParseResult<void> ValueDecoder::raw(
+    String& value, const char *str, const char *end) {
+  concat_hack(value, str, end - str);
+  return ParseResult<void>().until(end);
+}
+
 // Since C++11 it is possible to define the initial values for static
 // const members in the class declaration, but if their address is
 // taken, they still need a normal definition somewhere (to allocate
@@ -412,7 +559,6 @@ constexpr char reactive_power_l3_import::name_progmem[];
 constexpr ObisId reactive_power_l3_export::id;
 constexpr char reactive_power_l3_export::name_progmem[];
 //constexpr const __FlashStringHelper *reactive_power_l3_export::name;
-
 
 
 

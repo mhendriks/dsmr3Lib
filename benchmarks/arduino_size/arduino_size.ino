@@ -8,10 +8,10 @@
 
 #if DSMR_BENCH_VERSION == 2
   #include <dsmr2.h>
-#elif DSMR_BENCH_VERSION == 3
+#elif DSMR_BENCH_VERSION == 3 || DSMR_BENCH_VERSION == 4
   #include <dsmr3.h>
 #else
-  #error "DSMR_BENCH_VERSION must be 2 or 3"
+  #error "DSMR_BENCH_VERSION must be 2, 3 or 4"
 #endif
 
 #include "../field_profiles.h"
@@ -61,4 +61,3 @@ void setup() {
 
 void loop() {
 }
-

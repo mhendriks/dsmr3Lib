@@ -92,3 +92,48 @@ Important observations:
 The first hybrid target is therefore reducing the 22,650-byte v3 flash increase
 from minimal to the P1 Dongle profile, while preserving equal static RAM and
 the current tolerant behavior.
+
+## Shared value-decoder experiment
+
+Branch `codex/shared-value-decoders` keeps the standard v3 `ParsedData<...>`
+storage and recursive field selection. Only the parsing bodies for strings,
+timestamps, fixed values, timestamped fixed values and raw values move from
+field templates to ordinary functions in `fields3.cpp`. This lets every field
+retain its existing type and API while sharing one decoder per value shape.
+
+Measured on 2026-08-13 with the same ESP32 core and FQBN as the baseline:
+
+| Version | Profile | Flash | Static RAM | Host `ParsedData` size |
+| --- | --- | ---: | ---: | ---: |
+| v2 template | minimal | 264,026 B | 13,208 B | 40 B |
+| v3 template decoders | minimal | 265,150 B | 13,208 B | 40 B |
+| v3 shared decoders | minimal | 265,376 B | 13,208 B | 40 B |
+| v2 template | P1 Dongle | 279,756 B | 13,960 B | 1,168 B |
+| v3 template decoders | P1 Dongle | 287,800 B | 13,960 B | 1,168 B |
+| v3 shared decoders | P1 Dongle | 278,674 B | 13,960 B | 1,168 B |
+
+For the production profile, shared decoders save 9,126 bytes versus standard
+v3 and 1,082 bytes versus v2. They add 226 bytes to the intentionally tiny
+minimal profile, but this remains below the 5% acceptance limit. Static RAM
+and the data-object size are unchanged.
+
+A same-run 1,000-iteration native benchmark measured P1 Dongle core parsing at
+9,856 ns/telegram for standard v3 and 9,014 ns/telegram for shared decoders.
+End-to-end measurements remained in the same range and are dominated by CRC
+work. Timing varies between host runs, so the flash reduction—not this single
+speed result—is the primary evidence.
+
+All 12 tests pass. Two snapshot suites compare every generator telegram with
+v2 and standard v3; the second suite hashes presence and values for all 52 P1
+Dongle fields. Both shared-decoder comparisons matched all 24 telegrams.
+
+### Descriptor/offset decision
+
+Compact lookup descriptors and storage offsets were not added to this branch.
+The earlier function-pointer dispatch experiment showed that a per-field table
+can consume more flash than recursive selection, while decoder sharing alone
+already exceeds the production-profile target. Offsets would also couple the
+parser to C++ base-class layout unless storage is redesigned. The safer next
+step is therefore target-hardware soak testing of this smaller change. A
+descriptor lookup should only be reconsidered if profiling later shows field
+selection—not decoding or CRC—to be the remaining bottleneck.
