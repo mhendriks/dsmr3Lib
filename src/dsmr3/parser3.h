@@ -447,7 +447,7 @@ struct P1Parser {
         // is not otherwise valid.
         ParseResult<void> tmp = data->parse_line(ObisId(255, 255, 255, 255, 255, 255), line_start, line_end);
         if (tmp.err)
-          res.addFieldError(tmp);
+          res.addFieldError(tmp, line_start);
         line_start = ++line_end;
         break;
       }
@@ -463,7 +463,7 @@ struct P1Parser {
       if (*line_end == '\r' || *line_end == '\n' && line_start <= line_end) {
         ParseResult<void> tmp = parse_line(data, line_start, line_end, unknown_error);
         if (tmp.err) {
-          res.addFieldError(tmp);
+          res.addFieldError(tmp, line_start);
           line_start = line_end + 1;
         } else {
           line_start = tmp.next;
@@ -473,9 +473,12 @@ struct P1Parser {
     }
 
     if (line_end != line_start) {
-      ParseResult<void> field_error;
-      field_error.fail(F("Last dataline not CRLF terminated"), line_end);
-      res.addFieldError(field_error);
+      // Some meters put the telegram end marker directly after the final
+      // field instead of terminating that field with CR/LF. The caller's
+      // end pointer already excludes '!', so parse it as a normal line.
+      ParseResult<void> tmp = parse_line(data, line_start, line_end, unknown_error);
+      if (tmp.err)
+        res.addFieldError(tmp, line_start);
     }
 
     return res;

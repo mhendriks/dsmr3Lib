@@ -32,11 +32,25 @@ class String {
 
   size_t length() const { return value_.length(); }
   const char *c_str() const { return value_.c_str(); }
-  void reserve(size_t value) { value_.reserve(value); }
+  bool reserve(size_t value) {
+    value_.reserve(value);
+    return value_.capacity() >= value;
+  }
+  void clear() { value_.clear(); }
   char operator[](size_t index) const { return value_[index]; }
 
-  void concat(const char *value) { value_ += value ? value : ""; }
-  void concat(char value) { value_ += value; }
+  bool concat(const char *value) {
+    value_ += value ? value : "";
+    return true;
+  }
+  bool concat(const char *value, size_t length) {
+    if (value) value_.append(value, length);
+    return true;
+  }
+  bool concat(char value) {
+    value_ += value;
+    return true;
+  }
 
   String& operator=(const char *value) {
     value_ = value ? value : "";
@@ -82,4 +96,3 @@ class Stream {
 };
 
 #endif
-

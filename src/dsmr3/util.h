@@ -116,8 +116,7 @@ struct ParseResult : public _ParseResult<ParseResult<T>, T> {
   const __FlashStringHelper *err = NULL;
   const char *ctx = NULL;
   uint16_t field_errors = 0;
-  const __FlashStringHelper *first_field_err = NULL;
-  const char *first_field_ctx = NULL;
+  const char *first_field_line = NULL;
 
   ParseResult& fail(const __FlashStringHelper *err, const char* ctx = NULL) {
     this->err = err;
@@ -134,15 +133,12 @@ struct ParseResult : public _ParseResult<ParseResult<T>, T> {
   template <typename T2>
   ParseResult(const ParseResult<T2>& other)
     : next(other.next), err(other.err), ctx(other.ctx),
-      field_errors(other.field_errors), first_field_err(other.first_field_err),
-      first_field_ctx(other.first_field_ctx) { }
+      field_errors(other.field_errors), first_field_line(other.first_field_line) { }
 
-  void addFieldError(const ParseResult<void>& other) {
+  void addFieldError(const ParseResult<void>& other, const char *line = NULL) {
     ++field_errors;
-    if (!first_field_err) {
-      first_field_err = other.err;
-      first_field_ctx = other.ctx;
-    }
+    if (field_errors == 1)
+      first_field_line = line;
   }
 
   /**
