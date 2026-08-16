@@ -183,10 +183,3 @@ for reproducibility. Refresh them after adding telegrams to that project:
 Reproducible parser and ESP32-C3 size measurements are documented in
 [BENCHMARKS.md](BENCHMARKS.md). In the measured P1 Dongle profile, the shared
 decoders use 1,082 bytes less flash than v2 while keeping static RAM unchanged.
-
-## Release integration
-
-DSMR-API firmware 5.9.0 depends on the v3-only reader API, including
-`P1FieldWarning`, `P1Diagnostics` and `CompleteRaw(String&)`. Build that
-firmware with dsmr3Lib 1.0.0 or a newer compatible release; dsmr2Lib cannot be
-substituted without reverting those integrations.
